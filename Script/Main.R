@@ -1,4 +1,4 @@
-setwd("C:/Users/pakno/OneDrive - University of Toronto/NutNet")
+setwd("C:/Users/pakno/OneDrive - University of Toronto/phy_covar")
 
 Nutnet <- read.csv("Data/comb-by-plot_2024-05-31.csv")
 Cover <- read.csv("Data/full-cover_2024-05-31.csv")
@@ -90,10 +90,12 @@ all_sp <- Cover_subset[,c("Family","Genus","Taxon")]
 all_sp <- all_sp[!duplicated(all_sp$Taxon),]
 colnames(all_sp)[c(1,2,3)] <- c("family","genus","species")
 all_sp <- all_sp[,c(3,2,1)]
+load("C:/Users/pakno/OneDrive - University of Toronto/phy_covar/Data/Plants_WP.rdata")
 
 clean_taxon <- nameMatch(spList=gsub("_"," ",all_sp$species),spSource=database,author=F)
 clean_taxon[clean_taxon$Submitted_Name == clean_taxon$Submitted_Genus,"Submitted_Name"] <- paste0(clean_taxon[clean_taxon$Submitted_Name == clean_taxon$Submitted_Genus,"Submitted_Name"]," sp.")
 clean_taxon[clean_taxon$Accepted_SPNAME == clean_taxon$Submitted_Genus,"Accepted_SPNAME"] <- paste0(clean_taxon[clean_taxon$Accepted_SPNAME == clean_taxon$Submitted_Genus,"Accepted_SPNAME"]," sp.")
+length(unique(clean_taxon$Accepted_SPNAME)) - table(clean_taxon$NOTE)[[1]] #number of species in the analyses
 
 all_sp2 <- clean_taxon[,c("Accepted_SPNAME","Genus_in_database","Family")]
 colnames(all_sp2) <- c("species","genus","family")
@@ -144,6 +146,8 @@ for (i in 1:length(unique(Cover_subset$ID))) {
   
   sp_info <- unique(Cover_df_subset[,c("Accepted_SPNAME","Family","Genus","n")])
   sp_info$avg_cover <- colMeans(comp_df[,-1])
+  sp_info$var_cover <- apply(comp_df[,-1],2,var)
+  sp_info$pop_stab <- sp_info$avg_cover/sqrt(sp_info$var_cover)
   
   plot_result[[i]] <- SES.cor.ab(comp_df[,-1],comp_df$year,plot_info=plot_info,sp_info=sp_info)
   
@@ -151,12 +155,21 @@ for (i in 1:length(unique(Cover_subset$ID))) {
 
 all_SES_pair_long <- do.call(rbind,lapply(plot_result,function(x) x$SES.pair.long))
 species_df <- do.call(rbind,lapply(plot_result,function(x) x$species.df))
+
 #####
+fam_df <- data.frame(sp=c(all_SES_pair_long$sp1,all_SES_pair_long$sp2),
+                     family=c(all_SES_pair_long$Family.x,all_SES_pair_long$Family.y))
+fam_df <- unique(fam_df)
+fam_df <- fam_df %>%
+  left_join(unique(Cover_subset[,c("Accepted_SPNAME","functional_group")]),by=join_by(sp==Accepted_SPNAME))
 
+table(fam_df$functional_group)
+#####
+library(V.PhyloMaker2)
 all_sp2 <- all_sp2[all_sp2$species %in% gsub("_"," ",species_df$sp),]
-tree1 <- V.PhyloMaker2::phylo.maker(all_sp2,GBOTB.extended.WP,nodes.info.1.WP)
-
-phylo_pair <- cov2cor(vcv(tree1$scenario.3))
+tree1 <- phylo.maker(all_sp2,GBOTB.extended.WP,nodes.info.1.WP,scenario="S1")
+table(tree1$species.list$status)
+phylo_pair <- cophenetic.phylo(tree1$scenario.1)
 
 phylo_pair_df <- expand.grid(rownames(phylo_pair),colnames(phylo_pair))
 phylo_pair_df$phy.cor <- c(phylo_pair)
@@ -268,52 +281,185 @@ unique_distri_sp_df$label <- paste0(gsub(" ","_",unique_distri_sp_df$Var1),"_",g
 all_SES_pair_long <- all_SES_pair_long %>%
   left_join(unique_distri_sp_df[,c("repl","rich","label")],by=join_by(label))
 
-######
-
 all_SES_pair_long$plotID_full <- paste0(all_SES_pair_long$site_code,"_",all_SES_pair_long$block,"_",all_SES_pair_long$plot,"_",all_SES_pair_long$subplot)
 all_SES_pair_long$tl_dist <- all_SES_pair_long$repl+all_SES_pair_long$rich
 all_SES_pair_long$pairs <- paste0(all_SES_pair_long$local_provenance.x,"-",all_SES_pair_long$local_provenance.y)
-all_SES_pair_long$pairs[all_SES_pair_long$pairs == "INT-NAT"] <- "NAT-INT"
 
-all_SES_pair_long <- all_SES_pair_long %>%
-  left_join(sr_df,join_by(plotID_full))
+######
+no_distri_sp <- fam_df[!gsub("_"," ",fam_df$sp) %in% unique_distri_sp,]
+
+no_distri_pair <- data.frame(name=c(all_SES_pair_long[,"sp1"],all_SES_pair_long[,"sp2"]),
+                             site_code=rep(all_SES_pair_long[,"site_code"],2),
+                             plotID_full=rep(all_SES_pair_long[,"plotID_full"],2))
+
+no_distri_pair <- no_distri_pair[no_distri_pair$name %in% no_distri_sp$sp,]
+
+summary_no_distri_sp <- no_distri_pair %>%   
+  group_by(name) %>%
+  summarize(n_site = n_distinct(site_code),
+            n_plot = n_distinct(plotID_full))
+#### synchrony analysis ----
+#all_SES_pair_long$pairs[all_SES_pair_long$pairs == "INT-NAT"] <- "NAT-INT"
+
+# all_SES_pair_long <- all_SES_pair_long %>%
+#   left_join(sr_df,join_by(plotID_full))
 library(glmmTMB)
 library(lme4)
 library(lmerTest)
 
 all_SES_pair_long$prop.n <- (all_SES_pair_long$n.x/all_SES_pair_long$year+all_SES_pair_long$n.y/all_SES_pair_long$year)/2
 all_SES_pair_long$pair_cover <- (all_SES_pair_long$avg_cover.x+all_SES_pair_long$avg_cover.y)/2/100
+all_SES_pair_long$min_cover <- apply(all_SES_pair_long[,c("avg_cover.x","avg_cover.y")],1,min)
+all_SES_pair_long$cover_diff <- abs(all_SES_pair_long$avg_cover.x/100-all_SES_pair_long$avg_cover.y/100)
 
-all_SES_pair_long_subset <- all_SES_pair_long[,c("obs.cor","pair_cover","year","repl","tl_dist","rich","phy.cor","plotID_full","label","n.x","n.y")]
+all_SES_pair_long_subset <- all_SES_pair_long[,c("sp1","sp2","gamma","obs.cor","log_Vratio","phi","pair_cover","year","repl","tl_dist","rich","phy.cor","plotID_full","label","n.x","n.y","site_code","cover_diff","min_cover","avg_cover.x","var_cover.x","pop_stab.x","pop_stab.y")]
 all_SES_pair_long_subset <- na.omit(all_SES_pair_long_subset)
 
-threshold <- quantile(all_SES_pair_long_subset$tl_dist,0.5,na.rm=T)
-all_SES_pair_long_subset_l <- subset(all_SES_pair_long_subset,pair_cover >= 0 & tl_dist <= threshold)
-all_SES_pair_long_subset_h <- subset(all_SES_pair_long_subset,pair_cover >= 0 & tl_dist > threshold) 
+site_df <- Env %>%
+  filter(site_code %in% all_SES_pair_long$site_code & trt == "Control") %>%
+  group_by(site_code) %>%
+  summarize(lat=mean(latitude),
+            long=mean(longitude))
 
-# m1_cover <- lmer(obs.cor~pair_cover*phy.cor*tl_dist+
-#                      (pair_cover*phy.cor*tl_dist||plotID_full)+(1|label),data=all_SES_pair_long_subset,REML=T)
-# summary(m1_cover)
+# threshold <- quantile(all_SES_pair_long_subset$tl_dist,0.5,na.rm=T)
+# all_SES_pair_long_subset$group <- ifelse(all_SES_pair_long_subset$tl_dist == 1 ,"historical allopatry","historical sympatry")
+# all_SES_pair_long_subset_l <- subset(all_SES_pair_long_subset,pair_cover >= 0 & tl_dist <= threshold)
+# all_SES_pair_long_subset_h <- subset(all_SES_pair_long_subset,pair_cover >= 0 & tl_dist > threshold) 
 
-m1_cover_l <- glmmTMB(obs.cor~pair_cover*phy.cor+
-                   (pair_cover*phy.cor||plotID_full)+(1|label),data=all_SES_pair_long_subset_l,REML=T)
-summary(m1_cover_l)
-performance::r2(m1_cover_l,tol=1e-100)
+all_SES_pair_long_clim <- all_SES_pair_long_subset %>%
+  left_join(Env[,c("site_code","latitude","MAT_v2","TEMP_VAR_v2","MAP_v2","MAP_VAR_v2","latitude")],by=join_by("site_code"),multiple="first")
 
-m1_cover_h <- glmmTMB(obs.cor~pair_cover*phy.cor+
-                   (pair_cover*phy.cor||plotID_full)+(1|label),data=all_SES_pair_long_subset_h,REML=T)
-summary(m1_cover_h)
-performance::r2(m1_cover_h)
+all_SES_pair_long_clim$obs.cor.beta <- (all_SES_pair_long_clim$obs.cor+1)/2
+all_SES_pair_long_clim$obs.cor.beta <- (all_SES_pair_long_clim$obs.cor.beta*(nrow(all_SES_pair_long_clim)-1)+0.5)/nrow(all_SES_pair_long_clim)
+all_SES_pair_long_clim$MAP_v2 <- log(all_SES_pair_long_clim$MAP_v2)
+all_SES_pair_long_clim$native_sim <- 1- all_SES_pair_long_clim$tl_dist
 
-m1_cover_h <- glmmTMB(obs.cor~pair_cover+phy.cor+
-                        (pair_cover+phy.cor||plotID_full)+(1|label),data=all_SES_pair_long_subset_h,REML=T)
-summary(m1_cover_h)
-min(c(max(all_SES_pair_long_subset_h$pair_cover,na.rm=T),max(all_SES_pair_long_subset_l$pair_cover,na.rm=T)))
+all_SES_pair_long_clim <- subset(all_SES_pair_long_clim,phy.cor <= 400)
+
+n <- (nrow(all_SES_pair_long_clim))
+all_SES_pair_long_clim$cover_diff_adj <- (all_SES_pair_long_clim$cover_diff * (n - 1) + 0.5) / n
+
+m1_cover_diff <- glmmTMB(cover_diff~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+
+                      (scale(sqrt(phy.cor))*scale(native_sim)||plotID_full),
+                    data=all_SES_pair_long_clim,
+                    dispformula = ~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|plotID_full),
+                    control = glmmTMBControl(parallel = 6),
+                    family= beta_family(link = "logit"),
+                    REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
+summary(m1_cover_diff)
+plot(simulateResiduals(m1_cover_diff))
+library(lmtest)
+library(sandwich)
+
+m1_sync <- glmmTMB(obs.cor~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+
+                      (scale(sqrt(phy.cor))*scale(native_sim)||plotID_full),
+                    data=all_SES_pair_long_clim,
+                    dispformula = ~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|plotID_full),
+                    control = glmmTMBControl(parallel = 6),
+                    REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
+summary(m1_sync)
+plot(simulateResiduals(m1_sync))
+
+m1_sync2 <- glmmTMB(obs.cor~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+scale(sqrt(cover_diff))+
+                     (scale(sqrt(phy.cor))*scale(native_sim)||plotID_full),
+                   data=all_SES_pair_long_clim,
+                   dispformula = ~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+scale(sqrt(cover_diff))+(1|plotID_full),
+                   control = glmmTMBControl(parallel = 6),
+                   REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
+summary(m1_sync2)
+plot(simulateResiduals(m1_sync2))
+
+all_SES_pair_long_clim$pop_stab_diff <- abs(log(all_SES_pair_long_clim$pop_stab.x)-log(all_SES_pair_long_clim$pop_stab.y))
+
+m1_pop <- glmmTMB(pop_stab_diff~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+
+                     (scale(sqrt(phy.cor))*scale(native_sim)||plotID_full),
+                   data=all_SES_pair_long_clim,
+                   dispformula = ~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|plotID_full),
+                   control = glmmTMBControl(parallel = 6),
+                   family=gaussian,
+                   REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
+summary(m1_pop)
+plot(simulateResiduals(m1_pop))
+
+m1_pop2 <- glmmTMB(pop_stab_diff~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+scale(cover_diff)+
+                      (scale(sqrt(phy.cor))*scale(native_sim)||plotID_full),
+                    data=all_SES_pair_long_clim,
+                    dispformula = ~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+scale(cover_diff)+(1|plotID_full),
+                    control = glmmTMBControl(parallel = 6),
+                  family=gaussian,
+                  REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
+summary(m1_pop2)
+
+plot(simulateResiduals(m1_pop2))
+# m1_pop <- glmmTMB(pop_stab_diff~scale(phy.cor)*scale(tl_dist)*scale(TEMP_VAR_v2)+
+#                        (scale(phy.cor)*scale(tl_dist)||plotID_full)+
+#                        (scale(TEMP_VAR_v2)||label),
+#                   data=subset(all_SES_pair_long_clim),
+#                   family=tweedie,
+#                   control = glmmTMBControl(parallel = 6))
+# summary(m1_pop)
+
+# m1_pop <- glmmTMB(pop_stab_diff~scale(phy.cor)*scale(tl_dist)*scale(MAP_VAR_v2)+scale(phy.cor)*scale(tl_dist)*scale(MAP_v2)+
+#                     (scale(phy.cor)*scale(tl_dist)||plotID_full)+
+#                     (scale(MAP_VAR_v2)+scale(MAP_v2)||label),
+#                   data=all_SES_pair_long_clim,
+#                   family=tweedie,
+#                   control = glmmTMBControl(parallel = 6))
+# summary(m1_pop)
+
+###
+example_df <- Cover_subset %>%
+  ungroup() %>%
+  filter(ID == "bogong.au_3_21_D") %>%
+  filter(Taxon == "Pimelea alpina" | Taxon == "Prasophyllum alpinum")
+
+###
+library(ggeffects)
+
+predict_df <-ggemmeans(m1_cover,terms=c("phy.cor[0:781,by=1]","tl_dist[0:1,by=0.5]"),terms_to_colnames=TRUE)
+predict_df$predicted <- ((predict_df$predicted*nrow(all_SES_pair_long_clim)-0.5)/(nrow(all_SES_pair_long_clim)-1))*2-1
+
+predict_df$facet <- as.character(predict_df$facet)
+predict_df$facet[predict_df$facet == "9"] <- "Precipitation seasonality = 9"
+predict_df$facet[predict_df$facet == "52.5"] <- "Precipitation seasonality = 52.5"
+predict_df$facet[predict_df$facet == "96"] <- "Precipitation seasonality = 96"
+predict_df$facet <- factor(predict_df$facet,levels=c("Precipitation seasonality = 9","Precipitation seasonality = 52.5","Precipitation seasonality = 96"))
+
+p <- ggplot(predict_df,aes(x=x,y=predicted))+
+  geom_line(aes(colour=group))+
+  facet_wrap(~facet)+
+  labs(y="Synchrony",x="Phylogenetic distance",colour="Native distribution dissimilarity")+
+  scale_color_manual(values=c("#1b9e77","#d95f02","#7570b3"))+
+  theme_bw()+
+  theme(legend.position="bottom")
+
+plot(p)
+
+###
 
 library(ggeffects)
+
+predict_df <-ggemmeans(m1_pop,terms=c("phy.cor[0:781,by=1]","MAP_VAR_v2[9:96,by=43.5]"),terms_to_colnames=TRUE)
+
+p2 <- ggplot(predict_df,aes(x=x,y=predicted))+
+  geom_line(aes(colour=group))+
+  labs(y="Pairwise population stability difference",x="Phylogenetic distance",colour="Precipitation seasonality")+
+  scale_color_manual(values=c("#1b9e77","#d95f02","#7570b3"))+
+  theme_bw()+
+  theme(legend.position="bottom")
+
+plot(p2)
+
+###
+library(ggeffects)
 predict_df_l <-ggemmeans(m1_cover_l,terms=c("phy.cor[0:1,by=0.01]","pair_cover[0:0.6,by=0.01]"))
-predict_df_l$pairs <- "Low"
+predict_df_l$pairs <- "Historically sympatric"
 predict_df_l$group <- as.numeric(as.character(predict_df_l$group))
+predict_df_l$metric <- "Pearson's Correlation Coefficient"
+predict_df_Vratio_l <-ggemmeans(m1_cover_l_Vratio,terms=c("phy.cor[0:1,by=0.01]","pair_cover[0:0.6,by=0.01]"))
+predict_df_Vratio_l$pairs <- "Historically sympatric"
+predict_df_Vratio_l$group <- as.numeric(as.character(predict_df_l$group))
+predict_df_Vratio_l$metric <- "log(Variance ratio)"
 
 p_distribution <- ggplot(data=all_SES_pair_long_subset,aes(x=phy.cor,y=pair_cover))+
   geom_point(data=all_SES_pair_long_subset_l,aes(x=phy.cor,y=pair_cover))+
@@ -338,8 +484,13 @@ plot(p_l)
 ggsave("Figure/p_l.tiff", dpi=600,width=15,height=15,compression="lzw",unit="cm")
 
 predict_df_h <-ggemmeans(m1_cover_h,terms=c("phy.cor[0:1,by=0.01]","pair_cover[0:0.6,by=0.01]"))
-predict_df_h$pairs <- "High"
+predict_df_h$pairs <- "Historically allopatric"
 predict_df_h$group <- as.numeric(as.character(predict_df_h$group))
+predict_df_h$metric <- "Pearson's Correlation Coefficient"
+predict_df_Vratio_h <-ggemmeans(m1_cover_h_Vratio,terms=c("phy.cor[0:1,by=0.01]","pair_cover[0:0.6,by=0.01]"))
+predict_df_Vratio_h$pairs <- "Historically allopatric"
+predict_df_Vratio_h$group <- as.numeric(as.character(predict_df_h$group))
+predict_df_Vratio_h$metric <- "log(Variance ratio)"
 
 p_h <- ggplot(data=predict_df_h,aes(x=x,y=group))+
   geom_raster(aes(fill=predicted))+
@@ -354,45 +505,228 @@ p_h <- ggplot(data=predict_df_h,aes(x=x,y=group))+
 plot(p_h)
 ggsave("Figure/p_h.tiff", dpi=600, width=15,height=15,compression="lzw",unit="cm")
 
-predict_df <- rbind(predict_df_l,predict_df_h)
-predict_df$facet_name = paste0("Average abundance= ",predict_df$group)
-predict_df <- subset(predict_df, group == 0.01 | group == 0.25 | group == 0.5)
+predict_df <- rbind(predict_df_l,predict_df_h,predict_df_Vratio_l ,predict_df_Vratio_h )
+predict_df$group <- predict_df$group*100
+predict_df$facet_name = paste0("Average cover = ",predict_df$group,"%")
+predict_df <- subset(predict_df, group == 1 | group == 25 | group == 50)
 p <- ggplot(data=predict_df,aes(x=x,y=predicted,colour=pairs,fill=pairs))+
   geom_line()+
   geom_ribbon(aes(ymin=conf.low,ymax=conf.high),colour="transparent",alpha=0.2)+
-  facet_wrap(~facet_name)+
+  facet_grid(metric~facet_name)+
   theme_bw()+
   scale_color_manual(values=c("#cc79a7","#009e73"))+
   scale_fill_manual(values=c("#cc79a7","#009e73"))+
-  labs(y="Temporal correlation",
-       x = "Phylogenetic correlation",
-       colour = "Native distribution dissimilarity",
-       fill = "Native distribution dissimilarity")+
+  labs(y="Synchrony",
+       x = "Phylogenetic relatedness",
+       colour = "Pairs",
+       fill = "Pairs")+
   theme(legend.position="bottom")
 plot(p)
 
-ggsave("Figure/p_line.tiff", dpi=600,width=15,height=15,compression="lzw",unit="cm")
+ggsave("Figure/p_line.tiff", dpi=600,width=18,height=18,compression="lzw",unit="cm")
 
-####
+#### pop stability analysis ----
 library(phytools)
+pop_stab_df <- NULL
+lambda_avg <- lambda_var <- K_avg <- K_var <- lambda_CV <- K_CV <- NULL
 
-lambda <- signal_sig <- K <- NULL
-for (i in 1:length(unique(all_SES_pair_long$plotID_full))){
-subset_data <- subset(all_SES_pair_long,plotID_full==unique(all_SES_pair_long$plotID_full)[[i]])
-subset_data <- unique(subset_data[,c("sp1","avg_cover.x")])
-avg_cover <- subset_data$avg_cover.x
-names(avg_cover) <- subset_data$sp1
+##### observed ----
+for (i in 1:length(unique(all_SES_pair_long_clim$plotID_full))){
+  lambda_avg_null <- lambda_var_null <- K_avg_null <- K_var_null <- lambda_CV_null <- K_CV_null <- NULL
+  
+  plotID_full <- unique(all_SES_pair_long_clim$plotID_full)[[i]]
+  subset_data <- subset(all_SES_pair_long_clim,plotID_full==unique(all_SES_pair_long_clim$plotID_full)[[i]])
 
-phylosig_result <- phylosig(tree1$scenario.3,avg_cover,method="lambda",test=TRUE)
-phylosig_result_K <- phylosig(tree1$scenario.3,avg_cover,method="K",test=F)
+  site_code <- unique(subset_data$site_code)
+  subset_env <- subset_data[,c("MAT_v2","TEMP_VAR_v2","MAP_v2","MAP_VAR_v2","tl_dist","year")]
+  max.phy.cor <- max(subset_data$phy.cor)
+  mean.phy.cor <- mean(subset_data$phy.cor)
+  
+  tl_dist_sd <- sd(subset_env$tl_dist)
+  subset_data <- unique(subset_data[,c("sp1","avg_cover.x","var_cover.x")])
 
-lambda <- c(lambda,phylosig_result$lambda)
-K <- c(K,phylosig_result_K)
-signal_sig <- c(signal_sig,ifelse(phylosig_result$P<0.05,1,0))
+if (nrow(subset_data) < 20) {
+  next()
+}
+  avg_cover <- subset_data$avg_cover.x
+  var_cover <- subset_data$var_cover.x
+  CV_cover <- sqrt(var_cover)/avg_cover
+  
+  names(avg_cover) <- subset_data$sp1
+  names(CV_cover) <- subset_data$sp1
+  names(var_cover) <- subset_data$sp1
+  gamma <- length(unique(subset_data$sp1))
+  
+  phylosig_result_avg <- phylosig(tree1$scenario.1,avg_cover,method="lambda",test=F)
+  phylosig_result_K_avg <- phylosig(tree1$scenario.1,avg_cover,method="K",test=F)
+  phylosig_result_var <- phylosig(tree1$scenario.1,var_cover,method="lambda",test=F)
+  phylosig_result_K_var <- phylosig(tree1$scenario.1,var_cover,method="K",test=F)
+  phylosig_result_CV <- phylosig(tree1$scenario.1,log(1/CV_cover),method="lambda",test=F)
+  phylosig_result_K_CV <- phylosig(tree1$scenario.1,log(1/CV_cover),method="K",test=F)
+  
+  lambda_avg <- c(lambda_avg,phylosig_result_avg$lambda)
+  lambda_var <- c(lambda_var,phylosig_result_var$lambda)
+  K_avg <- c(K_avg,phylosig_result_K_avg)
+  K_var <- c(K_var,phylosig_result_K_var)
+  lambda_CV <- c(lambda_CV,phylosig_result_CV$lambda)
+  K_CV <- c(K_CV,phylosig_result_K_CV)
+  
+  ##### null lambda ----
+  for (iter in 1:100) {
+    pos <- sample(1:nrow(subset_data),replace=F)
+    names(avg_cover) <- subset_data$sp1[pos]
+    names(CV_cover) <- subset_data$sp1[pos]
+    names(var_cover) <- subset_data$sp1[pos]
+    
+    phylosig_result_avg_null <- phylosig(tree1$scenario.1,avg_cover,method="lambda",test=F)
+    phylosig_result_K_avg_null <- phylosig(tree1$scenario.1,avg_cover,method="K",test=F)
+    phylosig_result_var_null <- phylosig(tree1$scenario.1,var_cover,method="lambda",test=F)
+    phylosig_result_K_var_null <- phylosig(tree1$scenario.1,var_cover,method="K",test=F)
+    phylosig_result_CV_null <- phylosig(tree1$scenario.1,log(1/CV_cover),method="lambda",test=F)
+    phylosig_result_K_CV_null <- phylosig(tree1$scenario.1,log(1/CV_cover),method="K",test=F)
+    
+    lambda_avg_null <- c(lambda_avg_null,phylosig_result_avg_null$lambda)
+    lambda_var_null <- c(lambda_var_null,phylosig_result_var_null$lambda)
+    K_avg_null <- c(K_avg_null,phylosig_result_K_avg_null)
+    K_var_null <- c(K_var_null,phylosig_result_K_var_null)
+    lambda_CV_null <- c(lambda_CV_null,phylosig_result_CV_null$lambda)
+    K_CV_null <- c(K_CV_null,phylosig_result_K_CV_null)
+  }
+  
+  lambda_avg_null_mean <- mean(lambda_avg_null)
+  lambda_var_null_mean <- mean(lambda_var_null)
+  K_avg_null_mean <- mean(K_avg_null)
+  K_var_null_mean <- mean(K_var_null)
+  lambda_CV_null_mean <- mean(lambda_CV_null)
+  K_CV_null_mean <- mean(K_CV_null)
+  
+  lambda_avg_null_sd <- sd(lambda_avg_null)
+  lambda_var_null_sd <- sd(lambda_var_null)
+  K_avg_null_sd <- sd(K_avg_null)
+  K_var_null_sd <- sd(K_var_null)
+  lambda_CV_null_sd <- sd(lambda_CV_null)
+  K_CV_null_sd <- sd(K_CV_null)
+  
+  pop_stab_df <- rbind(pop_stab_df,data.frame(plotID_full = plotID_full,
+                                              site_code = site_code,
+                                              lambda=phylosig_result_CV$lambda,
+                                              K=phylosig_result_K_CV,
+                                              SES_lambda= (phylosig_result_CV$lambda-lambda_CV_null_mean)/lambda_CV_null_sd,
+                                              SES_K= (phylosig_result_K_CV-K_CV_null_mean)/K_CV_null_sd,
+                                              gamma=gamma,
+                                              max.phy.cor=max.phy.cor,
+                                              mpd = mean.phy.cor,
+                                              tl_dist_sd = tl_dist_sd,
+                                              as.list(colMeans(subset_env))))
+  
 }
 
-t.test(lambda,mu=0.05)
-t.test(K)
+#### null ----
+lambda_avg_null <- lambda_var_null <- K_avg_null <- K_var_null <- lambda_CV_null <- K_CV_null <- NULL
+all_lambda_avg_null <- all_lambda_var_null <- all_K_avg_null <- all_K_var_null <- all_lambda_CV_null <- all_K_CV_null <- NULL
+
+for (iter in 1:1000) {
+  message(iter)
+  for (i in 1:length(unique(all_SES_pair_long_clim$plotID_full))){
+    plotID_full <- unique(all_SES_pair_long_clim$plotID_full)[[i]]
+    subset_data <- subset(all_SES_pair_long_clim,plotID_full==unique(all_SES_pair_long_clim$plotID_full)[[i]])
+    
+    site_code <- unique(subset_data$site_code)
+    subset_env <- subset_data[,c("MAT_v2","TEMP_VAR_v2","MAP_v2","MAP_VAR_v2","tl_dist","year")]
+    max.phy.cor <- max(subset_data$phy.cor)
+    
+    subset_data <- unique(subset_data[,c("sp1","avg_cover.x","var_cover.x")])
+    
+    if (nrow(subset_data) < 20) {
+      next()
+    }
+    avg_cover <- subset_data$avg_cover.x
+    var_cover <- subset_data$var_cover.x
+    CV_cover <- sqrt(var_cover)/avg_cover
+    
+    pos <- sample(1:nrow(subset_data),replace=F)
+    names(avg_cover) <- subset_data$sp1[pos]
+    names(CV_cover) <- subset_data$sp1[pos]
+    names(var_cover) <- subset_data$sp1[pos]
+    
+    phylosig_result_avg <- phylosig(tree1$scenario.1,avg_cover,method="lambda",test=TRUE)
+    phylosig_result_K_avg <- phylosig(tree1$scenario.1,avg_cover,method="K",test=F)
+    phylosig_result_var <- phylosig(tree1$scenario.1,var_cover,method="lambda",test=TRUE)
+    phylosig_result_K_var <- phylosig(tree1$scenario.1,var_cover,method="K",test=F)
+    phylosig_result_CV <- phylosig(tree1$scenario.1,log(1/CV_cover),method="lambda",test=TRUE)
+    phylosig_result_K_CV <- phylosig(tree1$scenario.1,log(1/CV_cover),method="K",test=TRUE)
+    
+    lambda_avg_null <- c(lambda_avg_null,phylosig_result_avg$lambda)
+    lambda_var_null <- c(lambda_var_null,phylosig_result_var$lambda)
+    K_avg_null <- c(K_avg_null,phylosig_result_K_avg)
+    K_var_null <- c(K_var_null,phylosig_result_K_var)
+    lambda_CV_null <- c(lambda_CV_null,phylosig_result_CV$lambda)
+    K_CV_null <- c(K_CV_null,phylosig_result_K_CV$K)
+  }
+  
+  all_lambda_avg_null <- c(all_lambda_avg_null,mean(lambda_avg_null))
+  all_lambda_var_null <- c(all_lambda_var_null,mean(lambda_var_null))
+  all_K_avg_null <- c(all_K_avg_null,mean(K_avg_null))
+  all_K_var_null <- c(all_K_var_null,mean(K_var_null))
+  all_lambda_CV_null <- c(all_lambda_CV_null,mean(lambda_CV_null))
+  all_K_CV_null <- c(all_K_CV_null,mean(K_CV_null))
+}
+
+t.test(lambda_avg)
+t.test(lambda_var)
+
+t.test(K_avg)
+t.test(K_var)
+
+t.test(lambda_CV)
+t.test(K_CV)
+
+#### new model 26122025 ----
+
+t.test(pop_stab_df$SES_lambda)
+t.test(pop_stab_df$SES_K)
+
+CV_lambda_m <- glmmTMB(lambda~scale(tl_dist)+scale(tl_dist_sd)+scale(MAP_VAR_v2)+scale(max.phy.cor)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(gamma)+(1|site_code),
+                       dispformula = ~scale(tl_dist)+scale(tl_dist_sd)+scale(max.phy.cor)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(gamma),
+                       data=pop_stab_df,REML=T,family=beta_family())
+summary(CV_lambda_m)
+plot(simulateResiduals(CV_lambda_m))
+
+CV_lambda_SES_m <- glmmTMB(SES_lambda~scale(tl_dist)+scale(tl_dist_sd)+scale(mpd)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(gamma)+(1|site_code),
+                       dispformula = ~scale(tl_dist)+scale(tl_dist_sd)+scale(mpd)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(gamma),
+                       data=pop_stab_df,REML=T)
+summary(CV_lambda_SES_m)
+
+plot(simulateResiduals(CV_lambda_SES_m))
+#### old model ----
+CV_lambda_m <- glmmTMB(lambda~scale(tl_dist)*scale(MAP_VAR_v2)+scale(tl_dist)*scale(TEMP_VAR_v2)+scale(tl_dist)*scale(MAT_v2)+scale(tl_dist)*scale(MAP_v2)+(1|site_code),weights=gamma,data=pop_stab_df,family=tweedie)
+summary(CV_lambda_m)
+
+library(DHARMa)
+plot(simulateResiduals(CV_lambda_m))
+
+CV_lambda_m <- glmmTMB(K~scale(tl_dist)*scale(MAP_v2)+scale(tl_dist)*scale(MAP_VAR_v2)+
+                         scale(tl_dist)*scale(MAT_v2)+scale(tl_dist)*scale(TEMP_VAR_v2)+scale(phy.cor)+scale(gamma)+
+                         (1|site_code),data=pop_stab_df,REML=T)
+summary(CV_lambda_m)
+
+
+########
+physig_df <- data.frame(value=c(lambda_avg,lambda_var,K_avg,K_var))
+df_size <-nrow(physig_df)/4
+physig_df$metric <- rep(c(rep("Average Cover",df_size),rep("Variance",df_size)),2)
+physig_df$signal <- c(rep("Pagel's λ",df_size*2),rep("Bloomberg's K",df_size*2))
+
+library(ggplot2)
+physig_p <- ggplot(physig_df)+
+  geom_violin(aes(y=value,x=signal))+
+  facet_wrap(~metric)+
+  labs(x="Phylogenetic signal",
+       y="Value")+
+  theme_bw()
+plot(physig_p)
+
+ggsave("Figure/p_signal.tiff", dpi=600,width=18,height=12,compression="lzw",unit="cm")
 
 null_lambda <- NULL
 for (i in 1:length(unique(all_SES_pair_long$plotID_full))){
@@ -638,3 +972,36 @@ t.test(phylo_sig_result$var_lambda)
 t.test(phylo_sig_result$coef_lambda)
 t.test(phylo_sig_result$CV_lambda)
 
+###
+library(tidyverse)
+
+all_SES_pair_long$plotID_full2 <- paste0(all_SES_pair_long$site_code,"_",all_SES_pair_long$block,"_",all_SES_pair_long$plot) #without subplot ID. doesn't make a difference
+Map_df <- Env %>%
+  mutate(plotID_full = paste0(site_code,"_",block,"_",plot)) %>%
+  filter(plotID_full %in% unique(all_SES_pair_long$plotID_full2) & trt == "Control") %>%
+  group_by(plotID_full) %>%
+  summarize(lat=mean(latitude),
+            long=mean(longitude),
+            range = max(year)-min(year),
+            earliest = min(year),
+            latest = max(year)) %>%
+  left_join(unique(all_SES_pair_long[,c("plotID_full2","year")]),by=join_by(plotID_full==plotID_full2)) %>%
+  mutate(indicator=range+1-year)
+
+library("sf")
+library("rnaturalearth")
+library("rnaturalearthdata")
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+class(world)
+
+map <- ggplot(data = world) +
+  geom_sf(colour="transparent",fill="grey75")+
+  geom_point(data=Map_df,aes(x=long,y=lat,colour=year),size=2)+
+  scale_color_gradient2(low="#f8765c",mid="#982d80",high="#221150",midpoint=13.5)+
+  labs(colour="Sampled years")+
+  theme_void()+
+  theme(legend.position="bottom")
+plot(map)
+
+ggsave("Figure/p_map.tiff", dpi=600,compression="lzw",width=8,height=5,bg="white")
