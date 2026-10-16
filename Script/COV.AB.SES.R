@@ -11,11 +11,29 @@ library(picante)
 SES.cor.ab<-function(X,year,iter=999,seed=999,plot_info,sp_info){
   set.seed(seed)
   X <- as.data.frame(X)
+  
   #observed average covariances
   cor.ob <- cor(X)
   var<-diag(cov(X))
+  sd <- apply(X[,-1],2,sd)
+  
   diag(cor.ob)<-NA
-
+  
+  pos_df <- expand.grid(1:ncol(X),1:ncol(X))
+  pos_df <- pos_df[pos_df$Var1 > pos_df$Var2,]
+    
+  pos_df$sp1_var <- var[pos_df$Var1]
+  pos_df$sp2_var <- var[pos_df$Var2]
+  pos_df$tvar_pair <- NA
+  for (i in 1:nrow(pos_df)){
+    pair_df<- X[,c(pos_df[i,]$Var1,pos_df[i,]$Var2)]
+    rs <- rowSums(pair_df)
+    pos_df$tvar_pair[i] <- var(rs)
+  }
+  
+  pos_df$log_Vratio <- log(pos_df$tvar_pair/(pos_df$sp1_var+pos_df$sp2_var))
+  pos_df$phi <- pos_df$tvar_pair/((sqrt(pos_df$sp1_var)+sqrt(pos_df$sp2_var))^2)
+  
   #observed abundance trend
   
   coef.lm<-function(X,year){
@@ -40,7 +58,6 @@ SES.cor.ab<-function(X,year,iter=999,seed=999,plot_info,sp_info){
     tmp.null<-cor(X.null)
     diag(tmp.null)<-NA
     
-    
     null.cor.list[[i]] <- c(tmp.null)
     null.coef <- cbind(null.coef,coef.lm(X.null,year))
    }
@@ -62,6 +79,8 @@ SES.cor.ab<-function(X,year,iter=999,seed=999,plot_info,sp_info){
   SES.pair.df <- SES.pair.df %>%
     filter(Var1 > Var2) %>%
     mutate(obs.cor = cor.ob[lower.tri(cor.ob)]) %>%
+    mutate(log_Vratio = pos_df$log_Vratio,
+           phi = pos_df$phi) %>%
     mutate(sp1 = as.character(sp1),
            sp2 = as.character(sp2))
   

@@ -167,8 +167,7 @@ get_null_df <- function() {
   null_result_df <- subset(null_result_df, phy.cor <= 400)
   
   n_rows <- nrow(null_result_df)
-  null_result_df$cover_diff_adj <- (null_result_df$cover_diff * (n_rows - 1) + 0.5) / n_rows
-  
+
   return(null_result_df)
 }
 
@@ -178,18 +177,6 @@ get_null_df <- function() {
 # ------------------------------------------------------------
 
 model_specs <- list(
-  
-  cover_diff = list(
-    formula     = cover_diff_adj ~ scale(sqrt(phy.cor)) * scale(native_sim) +
-      scale(MAP_VAR_v2) + scale(MAT_v2) + scale(TEMP_VAR_v2) + scale(MAP_v2) +
-      scale(year) + scale(log(gamma)) +
-      (scale(sqrt(phy.cor)) + scale(native_sim) || plotID_full),
-    dispformula = ~ scale(sqrt(phy.cor)) * scale(native_sim) +
-      scale(MAP_VAR_v2) + scale(MAT_v2) + scale(TEMP_VAR_v2) + scale(MAP_v2) +
-      scale(year) + scale(log(gamma)) + (1 | plotID_full),
-    family      = beta_family(link = "logit")
-  ),
-  
   sync = list(
     formula     = async ~ scale(sqrt(phy.cor)) * scale(native_sim) +
       scale(MAP_VAR_v2) + scale(MAT_v2) + scale(TEMP_VAR_v2) + scale(MAP_v2) +
@@ -427,9 +414,9 @@ start <- Sys.time()
 null_out <- run_null_models(
   get_null_df = get_null_df,
   model_specs = model_specs,
-  n_null      = 100,
+  n_null      = 200,
   alpha       = 0.05,
-  max_try     = 150,
+  max_try     = 250,
   n_cores     = 6
 )
 end <- Sys.time()
@@ -441,11 +428,6 @@ null_out$attempt_summary
 null_out$raw_coefs
 
 observed_tidy <- bind_rows(
-  
-  # --- model 1: if m1_cover_diff is a plain glm/glmmTMB ---
-  broom.mixed::tidy(m1_cover_diff, effects = "fixed", component = "cond") %>%   # drops component = "cond" override
-    mutate(model = "cover_diff"),                            # keep component as-is from tidy()
-  
   # --- model 2 ---
   broom.mixed::tidy(m1_sync, effects = "fixed", component = "cond") %>%
     mutate(model = "sync"),                                   # same — do NOT overwrite component
@@ -455,7 +437,6 @@ observed_tidy <- bind_rows(
 )
 
 observed_tidy <- bind_rows(
-  extract_glmmtmb_coefs(m1_cover_diff, "cover_diff"),
   extract_glmmtmb_coefs(m1_sync,       "sync"),
   extract_glmmtmb_coefs(m1_pop,       "pop")
 )

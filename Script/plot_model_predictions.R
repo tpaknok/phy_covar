@@ -19,7 +19,11 @@ plot_model_predictions <- function(
     ncol              = 1,
     nrow              = 2,
     dispersion_metric = c("disp", "sd", "cv"),
-    log_transform = F
+    log_transform     = FALSE,
+    show_raw_data     = FALSE,       # NEW: toggle raw data overlay
+    raw_alpha         = 0.3,         # NEW: transparency of raw points
+    raw_size          = 1.5,         # NEW: size of raw points
+    raw_colour        = "steelblue"  # NEW: colour of raw points
 ) {
   
   family            <- match.arg(family)
@@ -73,7 +77,6 @@ plot_model_predictions <- function(
   # ---- 4. Dispersion predictions ---------------------------------------
   disp_pred <- predict(model, newdata = newdat, type = "disp", re.form = NA)
   
-  # Tweedie power parameter
   tweedie_p <- if (family == "tweedie") {
     tryCatch(
       model$modelInfo$family$power,
@@ -81,7 +84,6 @@ plot_model_predictions <- function(
     )
   } else NULL
   
-  # Residual SD — confounded with mean for non-Gaussian
   mean_pred$residual_sd <- switch(family,
                                   gaussian = disp_pred,
                                   gamma    = mean_pred$mean / sqrt(disp_pred),
@@ -89,7 +91,6 @@ plot_model_predictions <- function(
                                   tweedie  = sqrt(disp_pred * mean_pred$mean ^ tweedie_p)
   )
   
-  # CV — partially removes mean contribution
   mean_pred$residual_cv <- switch(family,
                                   gaussian = mean_pred$residual_sd / mean_pred$mean,
                                   gamma    = 1 / sqrt(disp_pred),
@@ -97,7 +98,6 @@ plot_model_predictions <- function(
                                   tweedie  = sqrt(disp_pred * mean_pred$mean ^ (tweedie_p - 2))
   )
   
-  # Dispersion — pure dispformula effect, mean-independent
   mean_pred$disp_plot_var <- switch(dispersion_metric,
                                     disp = switch(family,
                                                   gaussian = disp_pred,
@@ -110,26 +110,21 @@ plot_model_predictions <- function(
   )
   
   disp_y_label <- switch(dispersion_metric,
-                         disp = switch(family,
-                                       gaussian = "Dispersion",
-                                       gamma    = "Dispersion",
-                                       beta     = "Dispersion",
-                                       tweedie  = "Dispersion"
-                         ),
-                         sd = "Model residual SD",
-                         cv = "Coefficient of variation"
+                         disp = "Dispersion",
+                         sd   = "Model residual SD",
+                         cv   = "Coefficient of variation"
   )
   
-  # ---- 5. Ribbon bounds — mean uncertainty only ------------------------
+  # ---- 5. Ribbon bounds ------------------------------------------------
   ribbon_lo_expr <- switch(family,
-                           gaussian = if (log_transform & family == "gaussian") expression(exp(mean - z_mult * se.fit)) else expression(mean - z_mult * se.fit),
+                           gaussian = if (log_transform) expression(exp(mean - z_mult * se.fit)) else expression(mean - z_mult * se.fit),
                            gamma    = expression(exp(log(mean) - z_mult * se.fit / mean)),
                            beta     = expression(plogis(qlogis(mean) - z_mult * se.fit / (mean * (1 - mean)))),
                            tweedie  = expression(exp(log(mean) - z_mult * se.fit / mean))
   )
   
   ribbon_hi_expr <- switch(family,
-                           gaussian = if (log_transform & family == "gaussian") expression(exp(mean + z_mult * se.fit)) else expression(mean + z_mult * se.fit),
+                           gaussian = if (log_transform) expression(exp(mean + z_mult * se.fit)) else expression(mean + z_mult * se.fit),
                            gamma    = expression(exp(log(mean) + z_mult * se.fit / mean)),
                            beta     = expression(plogis(qlogis(mean) + z_mult * se.fit / (mean * (1 - mean)))),
                            tweedie  = expression(exp(log(mean) + z_mult * se.fit / mean))
@@ -139,34 +134,66 @@ plot_model_predictions <- function(
     mutate(
       ribbon_lo = eval(ribbon_lo_expr),
       ribbon_hi = eval(ribbon_hi_expr),
-      mean = if (log_transform & family == "gaussian") exp(mean) else mean
+      mean      = if (log_transform & family == "gaussian") exp(mean) else mean
     )
   
+  # ---- 6. Prepare raw data for plotting --------------------------------
+  # Back-transform response if log_transform was applied pre-modelling
+  # ---- 6. Prepare raw data for plotting --------------------------------
+  raw_data <- if (show_raw_data) {
+    raw <- data[, c(x_var, response_var, if (!is.null(facet_var)) facet_var), drop = FALSE]
+    
+    if (log_transform && family == "gaussian") {
+      raw[[response_var]] <- exp(raw[[response_var]])
+    }
+    
+    if (!is.null(facet_var)) {
+      # Snap each raw facet value to the nearest grid level so raw data
+      # uses the same n_facet panels as mean_pred, not one per unique value
+      facet_grid_levels <- grid_list[[facet_var]]
+      raw[[facet_var]]  <- facet_grid_levels[
+        sapply(raw[[facet_var]], function(v) which.min(abs(facet_grid_levels - v)))
+      ]
+      raw$facet_label <- paste0(facet_label, " = ", raw[[facet_var]])
+    }
+    raw
+  } else NULL
   
-  # ---- 6. Optional facet -----------------------------------------------
+  # ---- 7. Optional facet -----------------------------------------------
   if (!is.null(facet_var)) {
-    mean_pred$facet_label <- paste0(facet_label," = ", mean_pred[[facet_var]])
+    mean_pred$facet_label <- paste0(facet_label, " = ", mean_pred[[facet_var]])
   }
   
   facet_layer <- if (!is.null(facet_var)) facet_wrap(~facet_label) else NULL
   group_var   <- if (is.null(facet_var)) 1 else mean_pred[[facet_var]]
   
-  # ---- 7. Mean / CI plot -----------------------------------------------
+  # ---- 8. Mean / CI plot -----------------------------------------------
   p_mean <- ggplot(mean_pred, aes(x = .data[[x_var]], y = mean, group = group_var)) +
+    # raw data drawn first so the model line sits on top
+    { if (show_raw_data)
+      geom_point(
+        data    = raw_data,
+        aes(x = .data[[x_var]], y = .data[[response_var]]),
+        inherit.aes = FALSE,
+        alpha   = raw_alpha,
+        size    = raw_size,
+        colour  = raw_colour
+      )
+    } +
     geom_ribbon(aes(ymin = ribbon_lo, ymax = ribbon_hi), alpha = 0.2) +
     geom_line(linetype = linetype_mean) +
     facet_layer +
     labs(y = y_label, x = x_label) +
     theme_bw()
   
-  # ---- 8. Dispersion plot ----------------------------------------------
+  # ---- 9. Dispersion plot ----------------------------------------------
   p_var <- ggplot(mean_pred, aes(x = .data[[x_var]], y = disp_plot_var, group = group_var)) +
     geom_line(linetype = linetype_var) +
     facet_layer +
     labs(y = disp_y_label, x = x_label) +
     theme_bw()
   
-  # ---- 9. Combine & return ---------------------------------------------
+  # ---- 10. Combine & return --------------------------------------------
   p_combined <- ggarrange(p_mean, p_var, ncol = ncol, nrow = nrow)
   
   return(list(

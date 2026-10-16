@@ -201,6 +201,11 @@ table(fam_df$functional_group)
 library(V.PhyloMaker2)
 all_sp2 <- all_sp2[all_sp2$species %in% gsub("_"," ",species_df$sp),]
 tree1 <- phylo.maker(all_sp2,GBOTB.extended.WP,nodes.info.1.WP,scenario="S1")
+
+####
+sp_check <- tree1$species.list$species[grepl("Potentilla|Xanthisma|Machaeranthera",tree1$species.list$species)]
+tree1_subset <- keep.tip(tree1$scenario.1,gsub(" ","_",sp_check))
+plot(tree1_subset)
 table(tree1$species.list$status)
 phylo_pair <- cophenetic.phylo(tree1$scenario.1)
 
@@ -391,7 +396,9 @@ all_SES_pair_long_subset <- all_SES_pair_long[,c("sp1","sp2","gamma","obs.cor","
                                                  "cover_diff","min_cover",
                                                  "avg_cover.x","avg_cover.y",
                                                  "var_cover.x","var_cover.y",
-                                                 "pop_stab.x","pop_stab.y")]
+                                                 "pop_stab.x","pop_stab.y",
+                                                 "Genus.x","Genus.y",
+                                                 "Family.x","Family.y")]
 all_SES_pair_long_subset <- na.omit(all_SES_pair_long_subset)
 
 site_df <- Env %>%
@@ -414,6 +421,18 @@ all_SES_pair_long_clim$MAP_v2 <- log(all_SES_pair_long_clim$MAP_v2)
 all_SES_pair_long_clim$native_sim <- 1- all_SES_pair_long_clim$tl_dist
 
 all_SES_pair_long_clim <- subset(all_SES_pair_long_clim,phy.cor <= 400)
+
+all_SES_pair_long_clim <- all_SES_pair_long_clim %>%
+    mutate(
+      phylo_bin = case_when(
+      Genus.x == Genus.y                         ~ "Same genus",
+      Family.x == Family.y & Genus.x != Genus.y  ~ "Same family but not same genus",
+      Family.x != Family.y                        ~ "Different family"
+    ),
+    phylo_bin = factor(phylo_bin, levels = c("Same genus", "Same family but not same genus", "Different family"))
+  )
+
+all_SES_pair_long_clim$pop_stab_diff <- abs(log(all_SES_pair_long_clim$pop_stab.x)-log(all_SES_pair_long_clim$pop_stab.y))
 
 n <- (nrow(all_SES_pair_long_clim))
 all_SES_pair_long_clim$cover_diff_adj <- (all_SES_pair_long_clim$cover_diff * (n - 1) + 0.5) / n
@@ -468,6 +487,8 @@ summary(m1_sync)
 plot(simulateResiduals(m1_sync))
 start<-Sys.time()
 
+save_glmmTMB_results(m1_sync, "Table/sync_results.csv",subset(comparison,model == "sync"))
+
 m1_sync <- glmmTMB(async~scale(sqrt(phy.cor))+scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+
                      (scale(sqrt(phy.cor))+scale(native_sim)||plotID_full),
                    data=all_SES_pair_long_clim,
@@ -477,9 +498,9 @@ m1_sync <- glmmTMB(async~scale(sqrt(phy.cor))+scale(native_sim)+scale(MAP_VAR_v2
 summary(m1_sync)
 end<-Sys.time()
 
-p_pair_sync <- plot_model_predictions(m1_sync,data=all_SES_pair_long_clim,family="gaussian",y_label = "Asynchrony",linetype_mean = "dashed",facet_var = "native_sim",facet_label = "Sympatry extent",nrow=2,ncol=1,dispersion_metric = c("disp"))
+p_pair_sync <- plot_model_predictions(m1_sync,data=all_SES_pair_long_clim,family="gaussian",y_label = "Interspecific asynchrony",linetype_mean = "dashed",facet_var = "native_sim",facet_label = "Native distribution overlap",nrow=2,ncol=1,dispersion_metric = c("disp"))
 ggsave("Figure/Result/sync.tiff", p_pair_sync$combined,
-       dpi = 600, width = 6, height =6, compression = "lzw")
+       dpi = 600, width = 6.2, height =6.2, compression = "lzw")
 
 m1_sync2 <- glmmTMB(async~scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+
                             (1|plotID_full),
@@ -493,7 +514,6 @@ cor(predict(m1_sync,re.form=NA),all_SES_pair_long_clim$async)
 cor(predict(m1_sync2,re.form=NA),all_SES_pair_long_clim$async)
 
 ### population stability ----
-all_SES_pair_long_clim$pop_stab_diff <- abs(log(all_SES_pair_long_clim$pop_stab.x)-log(all_SES_pair_long_clim$pop_stab.y))
 
 start<-Sys.time()
 m1_pop <- glmmTMB(pop_stab_diff~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+
@@ -505,7 +525,7 @@ m1_pop <- glmmTMB(pop_stab_diff~scale(sqrt(phy.cor))*scale(native_sim)+scale(MAP
                   REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
 summary(m1_pop)
 end<-Sys.time()
-
+save_glmmTMB_results(m1_pop, "Table/pop_results.csv",subset(comparison,model == "pop"))
 plot(simulateResiduals(m1_pop))
 
 m1_pop <- glmmTMB(pop_stab_diff~scale(sqrt(phy.cor))+scale(native_sim)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+
@@ -516,9 +536,9 @@ m1_pop <- glmmTMB(pop_stab_diff~scale(sqrt(phy.cor))+scale(native_sim)+scale(MAP
                   family=gaussian,
                   REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
 summary(m1_pop)
-p_pair_pop <- plot_model_predictions(m1_pop,data=all_SES_pair_long_clim,family="gaussian",y_label = "Population stability difference",facet_var = "native_sim",facet_label = "Sympatry extent", nrow=2,ncol=1,dispersion_metric = c("disp"))
+p_pair_pop <- plot_model_predictions(m1_pop,data=all_SES_pair_long_clim,family="gaussian",y_label = "Population stability difference",facet_var = "native_sim",facet_label = "Native distribution overlap", nrow=2,ncol=1,dispersion_metric = c("disp"))
 ggsave("Figure/Result/pop.tiff", p_pair_pop$combined,
-       dpi = 600, width = 6, height =6, compression = "lzw")
+       dpi = 600, width = 6.2, height =6.2, compression = "lzw")
 
 m1_pop2 <- glmmTMB(pop_stab_diff~scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+
                       (1|plotID_full),
@@ -532,6 +552,13 @@ cor(predict(m1_pop,re.form=NA),all_SES_pair_long_clim$pop_stab_diff)
 cor(predict(m1_pop2,re.form=NA),all_SES_pair_long_clim$pop_stab_diff)
 
 plot(simulateResiduals(m1_pop2))
+
+### example ----
+example_df <- subset(all_SES_pair_long_clim)
+
+example_df$resid_async <- residuals(m1_sync)
+example_df$resid_pop <- residuals(m1_pop)
+
 
 ### community-level
 library(phytools)
@@ -712,47 +739,47 @@ for (i in 1:length(unique(all_SES_pair_long_clim$plotID_full))){
 ###
 pop_stab_df$MAP_v2 <- log(pop_stab_df$MAP_v2)
 
-m1_cover_I <- glmmTMB(SES_I_avg~scale(native_sim)*scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|site_code),
-                           data=  pop_stab_df,
-                           dispformula = ~scale(native_sim)*scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma)),
-                           control = glmmTMBControl(parallel = 6),
-                           family=gaussian,
-                      REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
-summary(m1_cover_I)
-plot(simulateResiduals(m1_cover_I))
-
-m1_cover_I <- glmmTMB(SES_I_avg~scale(native_sim)+scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|site_code),
-                      data=  pop_stab_df,
-                      dispformula = ~scale(native_sim)+scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma)),
-                      control = glmmTMBControl(parallel = 6),
-                      family=gaussian,
-                      REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
-summary(m1_cover_I)
-p_comm_I_avg <- plot_model_predictions(m1_cover_I,data=pop_stab_df,family="gaussian",
-                                       y_label = "Moran's I SES (Average cover)", 
-                                       x_var = "VPD",
-                                       x_label = "Phylogenetic distance variance",
-                                       facet_var = "native_sim",
-                                       facet_label = "Average sympatry extent",
-                                       ncol= 1,
-                                       nrow = 2,
-                                       linetype_mean = "dashed",
-                                       linetype_var  = "dashed",
-                                       log_transform=F)
-ggsave("Figure/Result/avg_comm.tiff", p_comm_I_avg$combined,
-       dpi = 600, width = 8, height = 8, compression = "lzw")
-
-
-m1_cover_I2 <- glmmTMB(SES_I_avg~scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|site_code),
-                      data=  pop_stab_df,
-                      dispformula = ~scale(native_sim)+scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma)),
-                      control = glmmTMBControl(parallel = 6),
-                      family=gaussian,
-                      REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
-summary(m1_cover_I2)
-
-cor(predict(m1_cover_I,re.form=NA),pop_stab_df$SES_I_avg)
-cor(predict(m1_cover_I2 ,re.form=NA),pop_stab_df$SES_I_avg)
+# m1_cover_I <- glmmTMB(SES_I_avg~scale(native_sim)*scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|site_code),
+#                            data=  pop_stab_df,
+#                            dispformula = ~scale(native_sim)*scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma)),
+#                            control = glmmTMBControl(parallel = 6),
+#                            family=gaussian,
+#                       REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
+# summary(m1_cover_I)
+# plot(simulateResiduals(m1_cover_I))
+# 
+# m1_cover_I <- glmmTMB(SES_I_avg~scale(native_sim)+scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|site_code),
+#                       data=  pop_stab_df,
+#                       dispformula = ~scale(native_sim)+scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma)),
+#                       control = glmmTMBControl(parallel = 6),
+#                       family=gaussian,
+#                       REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
+# summary(m1_cover_I)
+# p_comm_I_avg <- plot_model_predictions(m1_cover_I,data=pop_stab_df,family="gaussian",
+#                                        y_label = "Moran's I SES (Average cover)", 
+#                                        x_var = "VPD",
+#                                        x_label = "Phylogenetic distance variance",
+#                                        facet_var = "native_sim",
+#                                        facet_label = "Average sympatry extent",
+#                                        ncol= 1,
+#                                        nrow = 2,
+#                                        linetype_mean = "dashed",
+#                                        linetype_var  = "dashed",
+#                                        log_transform=F)
+# ggsave("Figure/Result/avg_comm.tiff", p_comm_I_avg$combined,
+#        dpi = 600, width = 8, height = 8, compression = "lzw")
+# 
+# 
+# m1_cover_I2 <- glmmTMB(SES_I_avg~scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|site_code),
+#                       data=  pop_stab_df,
+#                       dispformula = ~scale(native_sim)+scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma)),
+#                       control = glmmTMBControl(parallel = 6),
+#                       family=gaussian,
+#                       REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
+# summary(m1_cover_I2)
+# 
+# cor(predict(m1_cover_I,re.form=NA),pop_stab_df$SES_I_avg)
+# cor(predict(m1_cover_I2 ,re.form=NA),pop_stab_df$SES_I_avg)
 # m1_cover_lambda <- glmmTMB(lambda_avg~scale(native_sim)+scale(sqrt(mpd))+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|site_code),
 #                          data=  pop_stab_df,
 #                          dispformula = ~scale(native_sim)+scale(sqrt(mpd))+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma)),
@@ -808,6 +835,7 @@ m1_stab_I <- glmmTMB(SES_I_stability~scale(native_sim)*scale(VPD)+scale(MAP_VAR_
                       family=gaussian,REML=T) #don't do phi because a pair between an abundant and a rare species will have high value, even though they are asynchronized.
 summary(m1_stab_I)
 plot(simulateResiduals(m1_stab_I))
+save_glmmTMB_results(m1_stab_I, "Table/SES_stab_results.csv")
 
 m1_stab_I <- glmmTMB(SES_I_stability~scale(native_sim)+scale(VPD)+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|site_code),
                      data=  pop_stab_df,
@@ -821,7 +849,7 @@ p_comm_I_stab <- plot_model_predictions(m1_stab_I,data=pop_stab_df,family="gauss
                                         x_var = "VPD",
                                         x_label = "Phylogenetic distance variance",
                                         facet_var = "native_sim",
-                                        facet_label = "Average sympatry extent",
+                                        facet_label = "Average native distribution overlap",
                                         ncol= 1,
                                         nrow = 2,
                                         linetype_mean = "dashed",
@@ -839,7 +867,34 @@ summary(m1_stab_I2)
 
 cor(predict(m1_stab_I,re.form=NA),pop_stab_df$SES_I_stability)
 cor(predict(m1_stab_I2 ,re.form=NA),pop_stab_df$SES_I_stability)
-    # m1_cover_lambda <- glmmTMB(lambda_avg~scale(native_sim)+sca
+
+hist_p <- ggplot(data=pop_stab_df,aes(x=SES_I_stability))+
+  geom_histogram(colour="black",fill="white",breaks = seq(min(pop_stab_df$SES_I_stability), max(pop_stab_df$SES_I_stability), by = 0.25))+
+  geom_vline(xintercept=1.96,colour="red")+
+  geom_vline(xintercept=-1.96,colour="red")+
+  labs(x="SES (Population Stability)",y="Number of plots (N=88)")+
+  theme_classic()
+  
+plot(hist_p)
+
+ggsave("Figure/Result/SES_pop_stab.tiff", hist_p,
+       dpi = 600, width = 4, height = 4, compression = "lzw")
+
+heat_p <- ggplot(data=pop_stab_df,aes(x=VPD,y=SES_I_stability,colour=native_sim))+
+  geom_point()+
+  scale_colour_viridis_c(name = "Native distribution overlap", option = "C") +
+  labs(x="Phylogenetic distance variance",y="SES (Population Stability) (N=88)",colour="Native distribution overlap")+
+  geom_hline(yintercept=1.96,colour="black",linetype=2)+
+  geom_hline(yintercept=-1.96,colour="black",linetype=2)+
+  theme_classic()+
+  theme(legend.position="bottom")
+
+plot(heat_p)
+
+ggsave("Figure/Result/SI_SES_pop_stab.tiff", heat_p,
+       dpi = 600, width = 5, height = 5, compression = "lzw")
+
+# m1_cover_lambda <- glmmTMB(lambda_avg~scale(native_sim)+sca
 # m1_stability_lambda <- glmmTMB(lambda_stability~scale(native_sim)+scale(sqrt(mpd))+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma))+(1|site_code),
 #                            data=  pop_stab_df,
 #                            dispformula = ~scale(native_sim)+scale(sqrt(mpd))+scale(MAP_VAR_v2)+scale(MAT_v2)+scale(TEMP_VAR_v2)+scale(MAP_v2)+scale(year)+scale(log(gamma)),
